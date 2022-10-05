@@ -1639,7 +1639,7 @@ func TestDistributor_ExemplarValidation(t *testing.T) {
 
 func BenchmarkDistributor_Push(b *testing.B) {
 	const (
-		numSeriesPerRequest = 1000
+		numSeriesPerRequest = 1024
 	)
 	ctx := user.InjectOrgID(context.Background(), "user")
 
@@ -1803,6 +1803,85 @@ func BenchmarkDistributor_Push(b *testing.B) {
 			},
 			expectedErr: "received a sample whose timestamp is too far in the future",
 		},
+		"HA dedup; all samples same replica": {
+			prepareConfig: func(limits *validation.Limits) {
+				limits.AcceptHASamples = true
+				limits.HAMaxClusters = 100
+			},
+			prepareSeries: func() ([]labels.Labels, []mimirpb.Sample) {
+				metrics := make([]labels.Labels, numSeriesPerRequest)
+				samples := make([]mimirpb.Sample, numSeriesPerRequest)
+
+				for i := 0; i < numSeriesPerRequest; i++ {
+					lbls := labels.NewBuilder(labels.Labels{{Name: model.MetricNameLabel, Value: "foo"}})
+					for i := 0; i < 10; i++ {
+						lbls.Set(fmt.Sprintf("name_%d", i), fmt.Sprintf("value_%d", i))
+					}
+					lbls.Set("cluster", "c1")
+					lbls.Set("__replica__", "r1")
+
+					metrics[i] = lbls.Labels()
+					samples[i] = mimirpb.Sample{
+						Value:       float64(i),
+						TimestampMs: time.Now().UnixNano() / int64(time.Millisecond),
+					}
+				}
+
+				return metrics, samples
+			},
+			expectedErr: "",
+		},
+		"HA dedup; 4 clusters 8 replicas evenly split": {
+			prepareConfig: func(limits *validation.Limits) {
+				limits.AcceptHASamples = true
+				limits.HAMaxClusters = 100
+			},
+			prepareSeries: func() ([]labels.Labels, []mimirpb.Sample) {
+				metrics := make([]labels.Labels, numSeriesPerRequest)
+				samples := make([]mimirpb.Sample, numSeriesPerRequest)
+
+				for i := 0; i < numSeriesPerRequest; i++ {
+					lbls := labels.NewBuilder(labels.Labels{{Name: model.MetricNameLabel, Value: "foo"}})
+					for i := 0; i < 10; i++ {
+						lbls.Set(fmt.Sprintf("name_%d", i), fmt.Sprintf("value_%d", i))
+					}
+					cluster := "c1"
+					replica := "r1"
+					switch i % 8 {
+					case 0:
+						cluster, replica = "c1", "r1"
+					case 1:
+						cluster, replica = "c1", "r2"
+					case 2:
+						cluster, replica = "c2", "r1"
+					case 3:
+						cluster, replica = "c2", "r2"
+					case 4:
+						cluster, replica = "c3", "r1"
+					case 5:
+						cluster, replica = "c3", "r2"
+					case 6:
+						cluster, replica = "c4", "r1"
+					case 7:
+						cluster, replica = "c4", "r2"
+					default:
+						panic("in the disco")
+					}
+					lbls.Set("cluster", cluster)
+					lbls.Set("__replica__", replica)
+
+					metrics[i] = lbls.Labels()
+					samples[i] = mimirpb.Sample{
+						Value:       float64(i),
+						TimestampMs: time.Now().UnixNano() / int64(time.Millisecond),
+					}
+				}
+
+				return metrics, samples
+			},
+			// not really an error but :shrug:
+			expectedErr: "",
+		},
 	}
 
 	for testName, testData := range tests {
@@ -1847,6 +1926,15 @@ func BenchmarkDistributor_Push(b *testing.B) {
 
 			distributorCfg.IngesterClientFactory = func(addr string) (ring_client.PoolClient, error) {
 				return &noopIngester{}, nil
+			}
+			codec := GetReplicaDescCodec()
+			ringStore, closer := consul.NewInMemoryClient(codec, log.NewNopLogger(), nil)
+			mock := kv.PrefixClient(ringStore, "prefix")
+			distributorCfg.HATrackerConfig = HATrackerConfig{
+				EnableHATracker: true,
+				KVStore:         kv.Config{Mock: mock},
+				UpdateTimeout:   100 * time.Millisecond,
+				FailoverTimeout: time.Second,
 			}
 
 			overrides, err := validation.NewOverrides(limits, nil)
