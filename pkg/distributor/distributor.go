@@ -669,6 +669,53 @@ func (d *Distributor) wrapPushWithMiddlewares(next push.Func) push.Func {
 	return next
 }
 
+type replicaState int
+
+const (
+	replicaRejectedUnknown replicaState = 0
+	replicaIsPrimary       replicaState = 1 << iota
+	replicaNotHA
+	replicaDeduped
+	replicaRejectedTooManyClusters
+
+	replicaAccepted = replicaIsPrimary | replicaNotHA
+)
+
+type haReplica struct {
+	cluster, replica string
+}
+
+// TODO document what this does
+func (d *Distributor) replicaObserved(ctx context.Context, userID string, replica haReplica) (replicaState, error) {
+	if span := opentracing.SpanFromContext(ctx); span != nil {
+		// TODO move this if in a separate function
+		// Make a copy of these, since they may be retained as tags
+		span.LogFields(
+			opentracing_log.String("cluster", copyString(replica.cluster)),
+			opentracing_log.String("replica", copyString(replica.replica)),
+		)
+	}
+
+	isAccepted, err := d.checkSample(ctx, userID, replica.cluster, replica.replica)
+	if err != nil {
+		switch {
+		case errors.Is(err, replicasNotMatchError{}):
+			// These samples have been deduped.
+			return replicaDeduped, err
+		case errors.Is(err, tooManyClustersError{}):
+			return replicaRejectedTooManyClusters, err
+		default:
+			return replicaRejectedUnknown, err
+		}
+	}
+
+	if isAccepted {
+		return replicaIsPrimary, nil
+	}
+	// If there wasn't an error but isAccepted is false that means we didn't find both HA labels.
+	return replicaNotHA, nil
+}
+
 func (d *Distributor) prePushHaDedupeMiddleware(next push.Func) push.Func {
 	return func(ctx context.Context, req *mimirpb.WriteRequest, callerCleanup func()) (*mimirpb.WriteResponse, error) {
 		cleanupInDefer := true
@@ -693,55 +740,13 @@ func (d *Distributor) prePushHaDedupeMiddleware(next push.Func) push.Func {
 
 		haReplicaLabel, haClusterLabel := d.limits.HAReplicaLabel(userID), d.limits.HAClusterLabel(userID)
 
-		type haReplica struct {
-			cluster, replica string
-		}
-		var replicaKey haReplica
-		getReplicaForSample := func(i int) haReplica {
-			replicaKey.cluster, replicaKey.replica = findHALabels(haReplicaLabel, haClusterLabel, req.Timeseries[i].Labels)
-			return replicaKey
-		}
-
-		type replicaState int
-		const (
-			replicaRejectedUnknown replicaState = 0
-			replicaIsPrimary       replicaState = 1 << iota
-			replicaNotHA
-			replicaDeduped
-			replicaRejectedTooManyClusters
-
-			replicaAccepted = replicaIsPrimary | replicaNotHA
-		)
-
-		// TODO document what this does
-		updateReplicaState := func(replica haReplica) (replicaState, error) {
-			if span := opentracing.SpanFromContext(ctx); span != nil {
-				// TODO move this if in a separate function
-				// Make a copy of these, since they may be retained as tags
-				span.LogFields(
-					opentracing_log.String("cluster", copyString(replicaKey.cluster)),
-					opentracing_log.String("replica", copyString(replicaKey.replica)),
-				)
+		var getReplicaForSample func(int) haReplica
+		{
+			var replicaKey haReplica
+			getReplicaForSample = func(i int) haReplica {
+				replicaKey.cluster, replicaKey.replica = findHALabels(haReplicaLabel, haClusterLabel, req.Timeseries[i].Labels)
+				return replicaKey
 			}
-
-			isAccepted, err := d.checkSample(ctx, userID, replicaKey.cluster, replicaKey.replica)
-			if err != nil {
-				switch {
-				case errors.Is(err, replicasNotMatchError{}):
-					// These samples have been deduped.
-					return replicaDeduped, err
-				case errors.Is(err, tooManyClustersError{}):
-					return replicaRejectedTooManyClusters, err
-				default:
-					return replicaRejectedUnknown, err
-				}
-			}
-
-			if isAccepted {
-				return replicaIsPrimary, nil
-			}
-			// If there wasn't an error but isAccepted is false that means we didn't find both HA labels.
-			return replicaNotHA, nil
 		}
 
 		samplesPerReplica := make(map[haReplica]int)
@@ -750,48 +755,48 @@ func (d *Distributor) prePushHaDedupeMiddleware(next push.Func) push.Func {
 		var errs multierror.MultiError
 		{
 			for i := range req.Timeseries {
-				replicaKey = getReplicaForSample(i)
+				replicaKey := getReplicaForSample(i)
 				samplesPerReplica[replicaKey]++
 				state, ok := replicaStates[replicaKey]
 				if !ok {
-					state, err = updateReplicaState(replicaKey)
+					state, err = d.replicaObserved(ctx, userID, replicaKey)
 					replicaStates[replicaKey] = state
 					errs.Add(err)
 				}
 				samplesPerState[state]++
 			}
 		}
-
-		findPreviousAccepted := func(i int) int {
-			for i > 0 {
-				state := replicaStates[getReplicaForSample(i)]
-				if state&replicaAccepted != 0 {
+		var lastAccepted int
+		{
+			findPreviousAccepted := func(i int) int {
+				for i > 0 {
+					state := replicaStates[getReplicaForSample(i)]
+					if state&replicaAccepted != 0 {
+						break
+					}
+					i--
+				}
+				return i
+			}
+			lastAccepted = findPreviousAccepted(len(req.Timeseries) - 1)
+			// next we shift all accepted samples to the front of the timeseries slice
+			for i := range req.Timeseries {
+				if i > lastAccepted {
 					break
 				}
-				i--
+				state := replicaStates[getReplicaForSample(i)]
+				if state&replicaAccepted == 0 {
+					req.Timeseries[i], req.Timeseries[lastAccepted] = req.Timeseries[lastAccepted], req.Timeseries[i]
+					lastAccepted--
+					lastAccepted = findPreviousAccepted(lastAccepted)
+				}
+
+				// If we found both the cluster and replica labels, we only want to include the cluster label when
+				// storing series in Mimir. If we kept the replica label we would end up with another series for the same
+				// series we're trying to dedupe when HA tracking moves over to a different replica.
+				removeLabel(haReplicaLabel, &(req.Timeseries[i].Labels))
 			}
-			return i
 		}
-		lastAccepted := findPreviousAccepted(len(req.Timeseries) - 1)
-
-		// next we shift all accepted samples to the front of the timeseries slice
-		for i := range req.Timeseries {
-			if i > lastAccepted {
-				break
-			}
-			state := replicaStates[getReplicaForSample(i)]
-			if state&replicaAccepted == 0 {
-				req.Timeseries[i], req.Timeseries[lastAccepted] = req.Timeseries[lastAccepted], req.Timeseries[i]
-				lastAccepted--
-				lastAccepted = findPreviousAccepted(lastAccepted)
-			}
-
-			// If we found both the cluster and replica labels, we only want to include the cluster label when
-			// storing series in Mimir. If we kept the replica label we would end up with another series for the same
-			// series we're trying to dedupe when HA tracking moves over to a different replica.
-			removeLabel(haReplicaLabel, &(req.Timeseries[i].Labels))
-		}
-
 		// We don't want to send samples beyond the last accepted sample - that was deduplicated
 		{
 			originalLen := len(req.Timeseries)
