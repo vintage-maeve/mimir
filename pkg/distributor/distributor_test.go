@@ -826,7 +826,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 			samples:          5,
 			expectedResponse: emptyResponse,
 		},
-		// Using very long replica label value results in validation error.
+		// Using very long replica label value results in not pushing the sample, hence a success.
 		{
 			enableTracker:    true,
 			acceptedReplica:  "instance0",
@@ -834,7 +834,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 			cluster:          "cluster0",
 			samples:          5,
 			expectedResponse: emptyResponse,
-			expectedCode:     400,
+			expectedCode:     0,
 		},
 	} {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
@@ -2921,6 +2921,7 @@ func TestHaDedupeMiddleware(t *testing.T) {
 		ctx               context.Context
 		enableHaTracker   bool
 		acceptHaSamples   bool
+		haMaxClusters     int
 		reqs              []*mimirpb.WriteRequest
 		expectedReqs      []*mimirpb.WriteRequest
 		expectedNextCalls int
@@ -2980,6 +2981,7 @@ func TestHaDedupeMiddleware(t *testing.T) {
 			ctx:             ctxWithUser,
 			enableHaTracker: true,
 			acceptHaSamples: true,
+			haMaxClusters:   1,
 			reqs: []*mimirpb.WriteRequest{
 				makeWriteRequestForGenerators(5, labelSetGenWithReplicaAndCluster(replica1, cluster1), nil, nil),
 				makeWriteRequestForGenerators(5, labelSetGenWithReplicaAndCluster(replica2, cluster1), nil, nil),
@@ -2989,6 +2991,28 @@ func TestHaDedupeMiddleware(t *testing.T) {
 			expectedReqs:      []*mimirpb.WriteRequest{makeWriteRequestForGenerators(5, labelSetGenWithCluster(cluster1), nil, nil)},
 			expectedNextCalls: 1,
 			expectErrs:        []int{0, 202, 400, 400},
+		}, {
+			name:            "perform partial HA deduplication",
+			ctx:             ctxWithUser,
+			enableHaTracker: true,
+			acceptHaSamples: true,
+			reqs: func() []*mimirpb.WriteRequest {
+				r1 := makeWriteRequestForGenerators(1, labelSetGenWithReplicaAndCluster(replica1, cluster1), nil, nil)
+
+				r2 := makeWriteRequestForGenerators(1, labelSetGenWithReplicaAndCluster(replica2, cluster1), nil, nil)
+				r3 := makeWriteRequestForGenerators(1, labelSetGenWithReplicaAndCluster(replica1, cluster2), nil, nil)
+				r2.Timeseries = append(r2.Timeseries, r3.Timeseries...)
+
+				return []*mimirpb.WriteRequest{r1, r2}
+			}(),
+			expectedReqs: func() []*mimirpb.WriteRequest {
+				c1 := makeWriteRequestForGenerators(1, labelSetGenWithCluster(cluster1), nil, nil)
+				c2 := makeWriteRequestForGenerators(1, labelSetGenWithCluster(cluster2), nil, nil)
+
+				return []*mimirpb.WriteRequest{c1, c2}
+			}(),
+			expectedNextCalls: 2,
+			expectErrs:        []int{0, 202},
 		},
 	}
 
@@ -3003,7 +3027,8 @@ func TestHaDedupeMiddleware(t *testing.T) {
 			var gotReqs []*mimirpb.WriteRequest
 			next := func(ctx context.Context, req *mimirpb.WriteRequest, cleanup func()) (*mimirpb.WriteResponse, error) {
 				nextCallCount++
-				gotReqs = append(gotReqs, req)
+				reqCopy := *req // make a copy of the request to retain the slices as they were at the time of the request
+				gotReqs = append(gotReqs, &reqCopy)
 				cleanup()
 				return nil, nil
 			}
@@ -3012,7 +3037,7 @@ func TestHaDedupeMiddleware(t *testing.T) {
 			flagext.DefaultValues(&limits)
 			limits.AcceptHASamples = tc.acceptHaSamples
 			limits.MaxLabelValueLength = 15
-			limits.HAMaxClusters = 1
+			limits.HAMaxClusters = tc.haMaxClusters
 
 			ds, _, _ := prepare(t, prepConfig{
 				numDistributors: 1,
@@ -3027,14 +3052,21 @@ func TestHaDedupeMiddleware(t *testing.T) {
 				gotErrs = append(gotErrs, err)
 			}
 
-			assert.Equal(t, tc.expectedReqs, gotReqs)
+			assert.Len(t, gotReqs, len(tc.expectedReqs))
+			for i := range gotReqs {
+				assert.ElementsMatch(t, tc.expectedReqs[i].Timeseries, gotReqs[i].Timeseries)
+				assert.ElementsMatch(t, tc.expectedReqs[i].Metadata, gotReqs[i].Metadata)
+				assert.Equal(t, tc.expectedReqs[i].SkipLabelNameValidation, gotReqs[i].SkipLabelNameValidation)
+				assert.Equal(t, tc.expectedReqs[i].Source, gotReqs[i].Source)
+			}
 			assert.Len(t, gotErrs, len(tc.expectErrs))
 			for errIdx, expectErr := range tc.expectErrs {
 				if expectErr > 0 {
 					// Expect an httpgrpc error with specific status code.
 					resp, ok := httpgrpc.HTTPResponseFromError(gotErrs[errIdx])
-					assert.True(t, ok)
-					assert.Equal(t, expectErr, int(resp.Code))
+					if assert.True(t, ok) {
+						assert.Equal(t, expectErr, int(resp.Code))
+					}
 				} else if expectErr == 0 {
 					// Expect no error.
 					assert.Nil(t, gotErrs[errIdx])
