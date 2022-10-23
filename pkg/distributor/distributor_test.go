@@ -1879,8 +1879,7 @@ func BenchmarkDistributor_Push(b *testing.B) {
 
 				return metrics, samples
 			},
-			// not really an error but :shrug:
-			expectedErr: "",
+			expectedErr: "replicas did not mach, rejecting sample:",
 		},
 	}
 
