@@ -749,10 +749,10 @@ func (d *Distributor) prePushHaDedupeMiddleware(next push.Func) push.Func {
 			}
 		}
 
+		var errs multierror.MultiError
 		samplesPerReplica := make(map[haReplica]int)
 		replicaStates := make(map[haReplica]replicaState, len(samplesPerReplica))
 		samplesPerState := make(map[replicaState]int)
-		var errs multierror.MultiError
 		{
 			for i := range req.Timeseries {
 				replicaKey := getReplicaForSample(i)
@@ -766,47 +766,19 @@ func (d *Distributor) prePushHaDedupeMiddleware(next push.Func) push.Func {
 				samplesPerState[state]++
 			}
 		}
-		var lastAccepted int
-		{
-			findPreviousAccepted := func(i int) int {
-				for i > 0 {
-					state := replicaStates[getReplicaForSample(i)]
-					if state&replicaAccepted != 0 {
-						break
-					}
-					i--
-				}
-				return i
-			}
-			lastAccepted = findPreviousAccepted(len(req.Timeseries) - 1)
-			// next we shift all accepted samples to the front of the timeseries slice
-			for i := range req.Timeseries {
-				if i > lastAccepted {
-					break
-				}
-				state := replicaStates[getReplicaForSample(i)]
-				if state&replicaAccepted == 0 {
-					req.Timeseries[i], req.Timeseries[lastAccepted] = req.Timeseries[lastAccepted], req.Timeseries[i]
-					lastAccepted--
-					lastAccepted = findPreviousAccepted(lastAccepted)
-				}
+		lastAccepted := sortByAccepted(req, replicaStates, getReplicaForSample, haReplicaLabel)
 
-				// If we found both the cluster and replica labels, we only want to include the cluster label when
-				// storing series in Mimir. If we kept the replica label we would end up with another series for the same
-				// series we're trying to dedupe when HA tracking moves over to a different replica.
-				removeLabel(haReplicaLabel, &(req.Timeseries[i].Labels))
+		for i := 0; i <= lastAccepted; i++ {
+			if replicaStates[getReplicaForSample(i)]&replicaIsPrimary == 0 {
+				continue
 			}
+			// If we found both the cluster and replica labels, we only want to include the cluster label when
+			// storing series in Mimir. If we kept the replica label we would end up with another series for the same
+			// series we're trying to dedupe when HA tracking moves over to a different replica.
+			removeLabel(haReplicaLabel, &(req.Timeseries[i].Labels))
 		}
 		// We don't want to send samples beyond the last accepted sample - that was deduplicated
-		{
-			originalLen := len(req.Timeseries)
-			req.Timeseries = req.Timeseries[:lastAccepted+1]
-			cleanup = func() {
-				// Restore the length so that we can put back all the series in the request to the memory pool
-				req.Timeseries = req.Timeseries[:originalLen]
-				callerCleanup()
-			}
-		}
+		cleanup = sliceUnacceptedRequests(req, lastAccepted, cleanup, callerCleanup)
 		{
 			// TODO move into a function
 			for replica, state := range replicaStates {
@@ -837,6 +809,48 @@ func (d *Distributor) prePushHaDedupeMiddleware(next push.Func) push.Func {
 		}
 		return resp, nil
 	}
+}
+
+func sliceUnacceptedRequests(req *mimirpb.WriteRequest, lastAccepted int, cleanup func(), callerCleanup func()) func() {
+	{
+		originalLen := len(req.Timeseries)
+		req.Timeseries = req.Timeseries[:lastAccepted+1]
+		cleanup = func() {
+			// Restore the length so that we can put back all the series in the request to the memory pool
+			req.Timeseries = req.Timeseries[:originalLen]
+			callerCleanup()
+		}
+	}
+	return cleanup
+}
+
+func sortByAccepted(req *mimirpb.WriteRequest, replicaStates map[haReplica]replicaState, getReplicaForSample func(int) haReplica, haReplicaLabel string) int {
+	findPreviousAccepted := func(i int) int {
+		for i > 0 {
+			state := replicaStates[getReplicaForSample(i)]
+			if state&replicaAccepted != 0 {
+				break
+			}
+			i--
+		}
+		return i
+	}
+	lastAccepted := findPreviousAccepted(len(req.Timeseries) - 1)
+	// next we shift all accepted samples to the front of the timeseries slice
+	for i := range req.Timeseries {
+		if i > lastAccepted {
+			break
+		}
+		state := replicaStates[getReplicaForSample(i)]
+		if state&replicaAccepted == 0 {
+			req.Timeseries[i], req.Timeseries[lastAccepted] = req.Timeseries[lastAccepted], req.Timeseries[i]
+			lastAccepted--
+			lastAccepted = findPreviousAccepted(lastAccepted)
+		}
+
+	}
+
+	return lastAccepted
 }
 
 func (d *Distributor) prePushRelabelMiddleware(next push.Func) push.Func {
