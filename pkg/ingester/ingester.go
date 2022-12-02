@@ -62,6 +62,7 @@ import (
 	"github.com/grafana/mimir/pkg/usagestats"
 	"github.com/grafana/mimir/pkg/util"
 	"github.com/grafana/mimir/pkg/util/globalerror"
+	"github.com/grafana/mimir/pkg/util/limiter"
 	util_log "github.com/grafana/mimir/pkg/util/log"
 	util_math "github.com/grafana/mimir/pkg/util/math"
 	"github.com/grafana/mimir/pkg/util/push"
@@ -1229,8 +1230,7 @@ func (i *Ingester) MetricsForLabelMatchers(ctx context.Context, req *client.Metr
 	defer q.Close()
 
 	// Run a query for each matchers set and collect all the results.
-	var sets []storage.SeriesSet
-
+	sets := make([]storage.SeriesSet, 0, len(matchersSet))
 	for _, matchers := range matchersSet {
 		// Interrupt if the context has been canceled.
 		if ctx.Err() != nil {
@@ -1252,6 +1252,8 @@ func (i *Ingester) MetricsForLabelMatchers(ctx context.Context, req *client.Metr
 		Metric: make([]*mimirpb.Metric, 0),
 	}
 
+	limiter := limiter.NewQueryLimiter(i.limits.MaxFetchedSeriesPerQuery(userID),
+		i.limits.MaxFetchedChunkBytesPerQuery(userID), i.limits.MaxChunksPerQuery(userID))
 	mergedSet := storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
 	for mergedSet.Next() {
 		// Interrupt if the context has been canceled.
@@ -1259,8 +1261,13 @@ func (i *Ingester) MetricsForLabelMatchers(ctx context.Context, req *client.Metr
 			return nil, ctx.Err()
 		}
 
+		lbls := mimirpb.FromLabelsToLabelAdapters(mergedSet.At().Labels())
+		// Make sure we aren't hitting the per-query series limit
+		if err := limiter.AddSeries(lbls); err != nil {
+			return nil, validation.LimitError(err.Error())
+		}
 		result.Metric = append(result.Metric, &mimirpb.Metric{
-			Labels: mimirpb.FromLabelsToLabelAdapters(mergedSet.At().Labels()),
+			Labels: lbls,
 		})
 	}
 
@@ -1438,12 +1445,16 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 		}
 	}
 
+	limiter := limiter.NewQueryLimiter(i.limits.MaxFetchedSeriesPerQuery(userID),
+		i.limits.MaxFetchedChunkBytesPerQuery(userID), i.limits.MaxChunksPerQuery(userID))
 	if streamType == QueryStreamChunks {
 		level.Debug(spanlog).Log("msg", "using queryStreamChunks")
-		numSeries, numSamples, err = i.queryStreamChunks(ctx, db, int64(from), int64(through), matchers, shard, stream)
+		numSeries, numSamples, err = i.queryStreamChunks(ctx, db, int64(from), int64(through), matchers, shard, stream,
+			limiter)
 	} else {
 		level.Debug(spanlog).Log("msg", "using queryStreamSamples")
-		numSeries, numSamples, err = i.queryStreamSamples(ctx, db, int64(from), int64(through), matchers, shard, stream)
+		numSeries, numSamples, err = i.queryStreamSamples(ctx, db, int64(from), int64(through), matchers, shard, stream,
+			limiter)
 	}
 	if err != nil {
 		return err
@@ -1455,7 +1466,8 @@ func (i *Ingester) QueryStream(req *client.QueryRequest, stream client.Ingester_
 	return nil
 }
 
-func (i *Ingester) queryStreamSamples(ctx context.Context, db *userTSDB, from, through int64, matchers []*labels.Matcher, shard *sharding.ShardSelector, stream client.Ingester_QueryStreamServer) (numSeries, numSamples int, _ error) {
+func (i *Ingester) queryStreamSamples(ctx context.Context, db *userTSDB, from, through int64, matchers []*labels.Matcher,
+	shard *sharding.ShardSelector, stream client.Ingester_QueryStreamServer, limiter *limiter.QueryLimiter) (numSeries, numSamples int, _ error) {
 	q, err := db.Querier(ctx, from, through)
 	if err != nil {
 		return 0, 0, err
@@ -1480,8 +1492,13 @@ func (i *Ingester) queryStreamSamples(ctx context.Context, db *userTSDB, from, t
 		series := ss.At()
 
 		// convert labels to LabelAdapter
+		lbls := mimirpb.FromLabelsToLabelAdapters(series.Labels())
+		// Enforce the max series
+		if err := limiter.AddSeries(lbls); err != nil {
+			return 0, 0, validation.LimitError(err.Error())
+		}
 		ts := mimirpb.TimeSeries{
-			Labels: mimirpb.FromLabelsToLabelAdapters(series.Labels()),
+			Labels: lbls,
 		}
 
 		it = series.Iterator(it)
@@ -1541,7 +1558,8 @@ func (i *Ingester) queryStreamSamples(ctx context.Context, db *userTSDB, from, t
 }
 
 // queryStreamChunks streams metrics from a TSDB. This implements the client.IngesterServer interface
-func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, through int64, matchers []*labels.Matcher, shard *sharding.ShardSelector, stream client.Ingester_QueryStreamServer) (numSeries, numSamples int, _ error) {
+func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, through int64, matchers []*labels.Matcher,
+	shard *sharding.ShardSelector, stream client.Ingester_QueryStreamServer, limiter *limiter.QueryLimiter) (numSeries, numSamples int, _ error) {
 	var q storage.ChunkQuerier
 	var err error
 	if i.limits.OutOfOrderTimeWindow(db.userID) > 0 {
@@ -1573,8 +1591,13 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 		series := ss.At()
 
 		// convert labels to LabelAdapter
+		lbls := mimirpb.FromLabelsToLabelAdapters(series.Labels())
+		// Enforce the max series
+		if err := limiter.AddSeries(lbls); err != nil {
+			return 0, 0, validation.LimitError(err.Error())
+		}
 		ts := client.TimeSeriesChunk{
-			Labels: mimirpb.FromLabelsToLabelAdapters(series.Labels()),
+			Labels: lbls,
 		}
 
 		it = series.Iterator(it)
@@ -1605,6 +1628,14 @@ func (i *Ingester) queryStreamChunks(ctx context.Context, db *userTSDB, from, th
 				return 0, 0, errors.Errorf("unknown chunk encoding from TSDB chunk querier: %v", meta.Chunk.Encoding())
 			}
 
+			// Enforce the max chunks
+			if err := limiter.AddChunks(1); err != nil {
+				return 0, 0, validation.LimitError(err.Error())
+			}
+			// Enforce the max chunks size
+			if err := limiter.AddChunkBytes(ch.Size()); err != nil {
+				return 0, 0, validation.LimitError(err.Error())
+			}
 			ts.Chunks = append(ts.Chunks, ch)
 			numSamples += meta.Chunk.NumSamples()
 		}
