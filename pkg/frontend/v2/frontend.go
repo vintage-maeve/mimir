@@ -275,9 +275,9 @@ func (f *Frontend) QueryResult(ctx context.Context, qrReq *frontendv2pb.QueryRes
 	userID := tenant.JoinTenantIDs(tenantIDs)
 
 	req := f.requests.get(qrReq.QueryID)
-	// It is possible that some old response belonging to different user was received, if frontend has restarted.
+	// It is possible that some old response belonging to a different user was received, if frontend has restarted.
 	// To avoid leaking query results between users, we verify the user here.
-	// To avoid mixing results from different queries, we randomize queryID counter on start.
+	// To avoid mixing results from different queries, we randomize the queryID counter on start.
 	if req != nil && req.userID == userID {
 		select {
 		case req.response <- qrReq:
@@ -290,17 +290,17 @@ func (f *Frontend) QueryResult(ctx context.Context, qrReq *frontendv2pb.QueryRes
 	return &frontendv2pb.QueryResultResponse{}, nil
 }
 
-// CheckReady determines if the query frontend is ready.  Function parameters/return
+// CheckReady determines if the query frontend is ready. Function parameters/return
 // chosen to match the same method in the ingester
 func (f *Frontend) CheckReady(_ context.Context) error {
 	workers := f.schedulerWorkers.getWorkersCount()
 
-	// If frontend is connected to at least one scheduler, we are ready.
+	// If the frontend is connected to at least one scheduler, we are ready.
 	if workers > 0 {
 		return nil
 	}
 
-	msg := fmt.Sprintf("not ready: number of schedulers this worker is connected to is %d", workers)
+	msg := fmt.Sprintf("not ready: number of schedulers this frontend is connected to is %d", workers)
 	level.Info(f.log).Log("msg", msg)
 	return errors.New(msg)
 }
