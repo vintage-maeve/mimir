@@ -369,7 +369,7 @@ type MetadataValidationConfig interface {
 	MaxMetadataLength(userID string) int
 }
 
-// CleanAndValidateMetadata returns an err if a metric metadata is invalid.
+// CleanAndValidateMetadata cleans metric metadata and returns an err if it's invalid.
 func CleanAndValidateMetadata(m *MetadataValidationMetrics, cfg MetadataValidationConfig, userID string, metadata *mimirpb.MetricMetadata) error {
 	if cfg.EnforceMetadataMetricName(userID) && metadata.GetMetricFamilyName() == "" {
 		m.missingMetricName.WithLabelValues(userID).Inc()

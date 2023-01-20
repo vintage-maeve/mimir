@@ -1314,7 +1314,7 @@ func (d *Distributor) LabelValuesForLabelName(ctx context.Context, from, to mode
 	return values, nil
 }
 
-// LabelNamesAndValues query ingesters for label names and values and returns labels with distinct list of values.
+// LabelNamesAndValues queries ingesters for label names and values and returns labels with a distinct list of values.
 func (d *Distributor) LabelNamesAndValues(ctx context.Context, matchers []*labels.Matcher) (*ingester_client.LabelNamesAndValuesResponse, error) {
 	replicationSet, err := d.GetIngesters(ctx)
 	if err != nil {
@@ -1614,7 +1614,7 @@ func (d *Distributor) LabelNames(ctx context.Context, from, to model.Time, match
 	return values, nil
 }
 
-// MetricsForLabelMatchers gets the metrics that match said matchers
+// MetricsForLabelMatchers gets the metrics that match said matchers.
 func (d *Distributor) MetricsForLabelMatchers(ctx context.Context, from, through model.Time, matchers ...*labels.Matcher) ([]labels.Labels, error) {
 	replicationSet, err := d.GetIngesters(ctx)
 	if err != nil {
@@ -1809,7 +1809,7 @@ func (d *Distributor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// HealthyInstancesCount implements the ReadLifecycler interface
+// HealthyInstancesCount implements the ReadLifecycler interface.
 //
 // We use a ring lifecycler delegate to count the number of members of the
 // ring. The count is then used to enforce rate limiting correctly for each

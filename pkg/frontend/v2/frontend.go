@@ -84,7 +84,7 @@ type Frontend struct {
 
 	lastQueryID atomic.Uint64
 
-	// frontend workers will read from this channel, and send request to scheduler.
+	// frontend workers will read from this channel, and send requests to their schedulers.
 	requestsCh chan *frontendRequest
 
 	schedulerWorkers        *frontendSchedulerWorkers
