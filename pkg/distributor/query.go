@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/ring"
 	"github.com/grafana/dskit/tenant"
 	"github.com/opentracing/opentracing-go"
@@ -266,12 +267,20 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSet ri
 
 			// Enforce the max chunks limits.
 			if chunkLimitErr := queryLimiter.AddChunks(resp.ChunksCount()); chunkLimitErr != nil {
+				level.Warn(d.log).Log("source", "QUERY.GO", "func", "queryIngesterStream", "msg", "Adding "+string(resp.ChunksCount())+" chunks fetched from the INGESTER", "status", "FAILED")
 				return nil, validation.LimitError(chunkLimitErr.Error())
+			}
+			if resp.ChunksCount() != 0 {
+				level.Warn(d.log).Log("source", "QUERY.GO", "func", "queryIngesterStream", "msg", "Adding "+string(resp.ChunksCount())+" chunks fetched from the INGESTER", "status", "OK")
 			}
 
 			for _, series := range resp.Chunkseries {
 				if limitErr := queryLimiter.AddSeries(series.Labels); limitErr != nil {
+					level.Warn(d.log).Log("source", "QUERY.GO", "func", "queryIngesterStream", "msg", "Adding 1 series ("+string(len(series.Labels))+") label adapters fetched from the INGESTER", "status", "FAILED")
 					return nil, validation.LimitError(limitErr.Error())
+				}
+				if len(series.Labels) != 0 {
+					level.Warn(d.log).Log("source", "QUERY.GO", "func", "queryIngesterStream", "msg", "Adding 1 series ("+string(len(series.Labels))+") label adapters fetched from the INGESTER", "status", "OK")
 				}
 			}
 
@@ -281,8 +290,10 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSet ri
 
 			for _, series := range resp.Timeseries {
 				if limitErr := queryLimiter.AddSeries(series.Labels); limitErr != nil {
+					level.Warn(d.log).Log("source", "QUERY.GO", "func", "queryIngesterStream", "msg", "ADDITIONAL Adding 1 series ("+string(len(series.Labels))+") label adapters fetched from the INGESTER", "status", "FAILED")
 					return nil, validation.LimitError(limitErr.Error())
 				}
+				level.Warn(d.log).Log("source", "QUERY.GO", "func", "queryIngesterStream", "msg", "ADDITIONAL Adding 1 series ("+string(len(series.Labels))+") label adapters fetched from the INGESTER", "status", "OK")
 			}
 
 			// This goroutine could be left running after replicationSet.Do() returns,
@@ -317,6 +328,8 @@ func (d *Distributor) queryIngesterStream(ctx context.Context, replicationSet ri
 	reqStats.AddFetchedSeries(uint64(len(resp.Chunkseries) + len(resp.Timeseries)))
 	reqStats.AddFetchedChunkBytes(uint64(resp.ChunksSize()))
 	reqStats.AddFetchedChunks(uint64(resp.ChunksCount()))
+
+	level.Warn(d.log).Log("\t", "\t", "source", "QUERY.GO", "func", "queryIngesterStream", "AddFetchedSeries", uint64(len(resp.Chunkseries)+len(resp.Timeseries)), "AddFetchedChunks", "uint64(resp.ChunksCount())")
 
 	return resp, nil
 }

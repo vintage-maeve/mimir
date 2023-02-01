@@ -760,7 +760,11 @@ func (q *blocksStoreQuerier) fetchSeriesFromStores(
 					// Add series fingerprint to query limiter; will return error if we are over the limit
 					limitErr := queryLimiter.AddSeries(s.Labels)
 					if limitErr != nil {
+						level.Warn(spanLog).Log("source", "BLOCK_STORE_QUERYABLE.GO", "func", "fetchSeriesFromStores", "msg", "Adding 1 series ("+string(len(s.Labels))+") label adapters fetched from the STORE-GATEWAY to QUERY_LIMITER", "status", "FAILED")
 						return validation.LimitError(limitErr.Error())
+					}
+					if len(s.Labels) != 0 {
+						level.Warn(spanLog).Log("source", "BLOCK_STORE_QUERYABLE.GO", "func", "fetchSeriesFromStores", "msg", "Adding 1 series ("+string(len(s.Labels))+") label adapters fetched from the STORE-GATEWAY to QUERY_LIMITER", "status", "OK")
 					}
 
 					chunksCount, chunksSize := countChunksAndBytes(s)
@@ -776,7 +780,11 @@ func (q *blocksStoreQuerier) fetchSeriesFromStores(
 						return validation.LimitError(chunkBytesLimitErr.Error())
 					}
 					if chunkLimitErr := queryLimiter.AddChunks(len(s.Chunks)); chunkLimitErr != nil {
+						level.Warn(spanLog).Log("source", "BLOCK_STORE_QUERYABLE.GO", "func", "fetchSeriesFromStores", "msg", "Adding "+string(len(s.Chunks))+" chunks fetched from the STORE-GATEWAY to QUERY_LIMITER", "chunksCount", chunksCount, "status", "FAILED")
 						return validation.LimitError(chunkLimitErr.Error())
+					}
+					if len(s.Chunks) != 0 {
+						level.Warn(spanLog).Log("source", "BLOCK_STORE_QUERYABLE.GO", "func", "fetchSeriesFromStores", "msg", "Adding "+string(len(s.Chunks))+" chunks fetched from the STORE-GATEWAY to QUERY_LIMITER", "chunksCount", chunksCount, "status", "OK")
 					}
 				}
 
@@ -811,7 +819,7 @@ func (q *blocksStoreQuerier) fetchSeriesFromStores(
 			reqStats.AddFetchedChunks(uint64(chunksFetched))
 			reqStats.AddFetchedIndexBytes(indexBytesFetched)
 
-			level.Debug(spanLog).Log("msg", "received series from store-gateway",
+			level.Warn(spanLog).Log("msg", "received series from store-gateway",
 				"instance", c.RemoteAddress(),
 				"fetched series", numSeries,
 				"fetched chunk bytes", chunkBytes,

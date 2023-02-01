@@ -463,10 +463,10 @@ func (u *BucketStores) getOrCreateStore(userID string) (*BucketStore, error) {
 		u.syncDirForUser(userID),
 		NewChunksLimiterFactory(func() uint64 {
 			return uint64(u.limits.MaxChunksPerQuery(userID))
-		}),
+		}, u.logger),
 		NewSeriesLimiterFactory(func() uint64 {
 			return uint64(u.limits.MaxFetchedSeriesPerQuery(userID))
-		}),
+		}, u.logger),
 		u.partitioners,
 		u.cfg.BucketStore.BlockSyncConcurrency,
 		u.cfg.BucketStore.PostingOffsetsInMemSampling,

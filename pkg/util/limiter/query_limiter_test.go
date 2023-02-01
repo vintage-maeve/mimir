@@ -30,7 +30,7 @@ func TestQueryLimiter_AddSeries_ShouldReturnNoErrorOnLimitNotExceeded(t *testing
 			labels.MetricName: metricName + "_2",
 			"series2":         "1",
 		})
-		limiter = NewQueryLimiter(100, 0, 0)
+		limiter = NewQueryLimiter(100, 0, 0, nil)
 	)
 	err := limiter.AddSeries(mimirpb.FromLabelsToLabelAdapters(series1))
 	assert.NoError(t, err)
@@ -58,7 +58,7 @@ func TestQueryLimiter_AddSeriers_ShouldReturnErrorOnLimitExceeded(t *testing.T) 
 			labels.MetricName: metricName + "_2",
 			"series2":         "1",
 		})
-		limiter = NewQueryLimiter(1, 0, 0)
+		limiter = NewQueryLimiter(1, 0, 0, nil)
 	)
 	err := limiter.AddSeries(mimirpb.FromLabelsToLabelAdapters(series1))
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestQueryLimiter_AddSeriers_ShouldReturnErrorOnLimitExceeded(t *testing.T) 
 }
 
 func TestQueryLimiter_AddChunkBytes(t *testing.T) {
-	var limiter = NewQueryLimiter(0, 100, 0)
+	var limiter = NewQueryLimiter(0, 100, 0, nil)
 
 	err := limiter.AddChunkBytes(100)
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func BenchmarkQueryLimiter_AddSeries(b *testing.B) {
 	}
 	b.ResetTimer()
 
-	limiter := NewQueryLimiter(b.N+1, 0, 0)
+	limiter := NewQueryLimiter(b.N+1, 0, 0, nil)
 	for _, s := range series {
 		err := limiter.AddSeries(mimirpb.FromLabelsToLabelAdapters(s))
 		assert.NoError(b, err)

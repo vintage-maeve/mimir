@@ -59,7 +59,7 @@ func TestBlocksStoreQuerier_Select(t *testing.T) {
 		metricNameLabel  = labels.FromStrings(labels.MetricName, metricName)
 		series1Label     = labels.FromStrings(labels.MetricName, metricName, "series", "1")
 		series2Label     = labels.FromStrings(labels.MetricName, metricName, "series", "2")
-		noOpQueryLimiter = limiter.NewQueryLimiter(0, 0, 0)
+		noOpQueryLimiter = limiter.NewQueryLimiter(0, 0, 0, nil)
 	)
 
 	type valueResult struct {
@@ -499,7 +499,7 @@ func TestBlocksStoreQuerier_Select(t *testing.T) {
 				},
 			},
 			limits:       &blocksStoreLimitsMock{},
-			queryLimiter: limiter.NewQueryLimiter(0, 0, 1),
+			queryLimiter: limiter.NewQueryLimiter(0, 0, 1, nil),
 			expectedErr:  validation.LimitError(fmt.Sprintf(limiter.MaxChunksPerQueryLimitMsgFormat, 1)),
 		},
 		"max chunks per query limit hit while fetching chunks during subsequent attempts": {
@@ -575,7 +575,7 @@ func TestBlocksStoreQuerier_Select(t *testing.T) {
 				},
 			},
 			limits:       &blocksStoreLimitsMock{},
-			queryLimiter: limiter.NewQueryLimiter(0, 0, 3),
+			queryLimiter: limiter.NewQueryLimiter(0, 0, 3, nil),
 			expectedErr:  validation.LimitError(fmt.Sprintf(limiter.MaxChunksPerQueryLimitMsgFormat, 3)),
 		},
 		"max series per query limit hit while fetching chunks": {
@@ -593,7 +593,7 @@ func TestBlocksStoreQuerier_Select(t *testing.T) {
 				},
 			},
 			limits:       &blocksStoreLimitsMock{},
-			queryLimiter: limiter.NewQueryLimiter(1, 0, 0),
+			queryLimiter: limiter.NewQueryLimiter(1, 0, 0, nil),
 			expectedErr:  validation.LimitError(fmt.Sprintf(limiter.MaxSeriesHitMsgFormat, 1)),
 		},
 		"max chunk bytes per query limit hit while fetching chunks": {
@@ -611,7 +611,7 @@ func TestBlocksStoreQuerier_Select(t *testing.T) {
 				},
 			},
 			limits:       &blocksStoreLimitsMock{maxChunksPerQuery: 1},
-			queryLimiter: limiter.NewQueryLimiter(0, 8, 0),
+			queryLimiter: limiter.NewQueryLimiter(0, 8, 0, nil),
 			expectedErr:  validation.LimitError(fmt.Sprintf(limiter.MaxChunkBytesHitMsgFormat, 8)),
 		},
 		"blocks with non-matching shard are filtered out": {
@@ -903,7 +903,7 @@ func TestBlocksStoreQuerier_Select_cancelledContext(t *testing.T) {
 
 	var (
 		block            = ulid.MustNew(1, nil)
-		noOpQueryLimiter = limiter.NewQueryLimiter(0, 0, 0)
+		noOpQueryLimiter = limiter.NewQueryLimiter(0, 0, 0, nil)
 	)
 
 	canceledRequestTests := map[string]bool{

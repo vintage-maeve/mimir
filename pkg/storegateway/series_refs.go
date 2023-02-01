@@ -584,6 +584,10 @@ func (l *limitingSeriesChunkRefsSetIterator) Next() bool {
 	}
 
 	l.currentBatch = l.from.At()
+	l.seriesLimiter.Log("\t", "\t\t\t\t\t", "source", "SERIES_REFS.GO", "count", l.currentBatch.len())
+	for _, series := range l.currentBatch.series {
+		l.seriesLimiter.Log("source", "SERIES_REFS.GO", "labels", series.lset.Map())
+	}
 	err := l.seriesLimiter.Reserve(uint64(l.currentBatch.len()))
 	if err != nil {
 		l.err = errors.Wrap(err, ErrSeriesLimitMessage)
@@ -595,6 +599,7 @@ func (l *limitingSeriesChunkRefsSetIterator) Next() bool {
 		totalChunks += len(s.chunks)
 	}
 
+	l.chunksLimiter.Log("source", "SERIES_REFS.GO", "chunks", totalChunks)
 	err = l.chunksLimiter.Reserve(uint64(totalChunks))
 	if err != nil {
 		l.err = errors.Wrap(err, ErrChunksLimitMessage)

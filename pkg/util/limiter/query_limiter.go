@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"go.uber.org/atomic"
 
 	"github.com/grafana/mimir/pkg/mimirpb"
@@ -45,11 +47,13 @@ type QueryLimiter struct {
 	maxSeriesPerQuery     int
 	maxChunkBytesPerQuery int
 	maxChunksPerQuery     int
+
+	logger log.Logger
 }
 
 // NewQueryLimiter makes a new per-query limiter. Each query limiter
 // is configured using the `maxSeriesPerQuery` limit.
-func NewQueryLimiter(maxSeriesPerQuery, maxChunkBytesPerQuery int, maxChunksPerQuery int) *QueryLimiter {
+func NewQueryLimiter(maxSeriesPerQuery, maxChunkBytesPerQuery, maxChunksPerQuery int, logger log.Logger) *QueryLimiter {
 	return &QueryLimiter{
 		uniqueSeriesMx: sync.Mutex{},
 		uniqueSeries:   map[uint64]struct{}{},
@@ -57,6 +61,7 @@ func NewQueryLimiter(maxSeriesPerQuery, maxChunkBytesPerQuery int, maxChunksPerQ
 		maxSeriesPerQuery:     maxSeriesPerQuery,
 		maxChunkBytesPerQuery: maxChunkBytesPerQuery,
 		maxChunksPerQuery:     maxChunksPerQuery,
+		logger:                logger,
 	}
 }
 
@@ -70,7 +75,7 @@ func QueryLimiterFromContextWithFallback(ctx context.Context) *QueryLimiter {
 	ql, ok := ctx.Value(ctxKey).(*QueryLimiter)
 	if !ok {
 		// If there's no limiter return a new unlimited limiter as a fallback
-		ql = NewQueryLimiter(0, 0, 0)
+		ql = NewQueryLimiter(0, 0, 0, nil)
 	}
 	return ql
 }
@@ -86,10 +91,18 @@ func (ql *QueryLimiter) AddSeries(seriesLabels []mimirpb.LabelAdapter) error {
 	ql.uniqueSeriesMx.Lock()
 	defer ql.uniqueSeriesMx.Unlock()
 
+	_, alreadyLogged := ql.uniqueSeries[fingerprint]
+
 	ql.uniqueSeries[fingerprint] = struct{}{}
 	if len(ql.uniqueSeries) > ql.maxSeriesPerQuery {
 		// Format error with max limit
+		if ql.logger != nil {
+			level.Warn(ql.logger).Log("source", "query_limiter.go", "func", "AddSeries", "msg", string(len(seriesLabels))+"Label adapters converted to a series and added to the limiter", "uniqueSeries", len(ql.uniqueSeries), "maxSeriesPerQuery", ql.maxSeriesPerQuery, "status", "FAILED")
+		}
 		return fmt.Errorf(MaxSeriesHitMsgFormat, ql.maxSeriesPerQuery)
+	}
+	if len(seriesLabels) != 0 && ql.logger != nil && !alreadyLogged {
+		level.Warn(ql.logger).Log("source", "query_limiter.go", "func", "AddSeries", "msg", string(len(seriesLabels))+"Label adapters converted to a series and added to the limiter", "uniqueSeries", len(ql.uniqueSeries), "maxSeriesPerQuery", ql.maxSeriesPerQuery, "status", "OK")
 	}
 	return nil
 }
@@ -118,7 +131,13 @@ func (ql *QueryLimiter) AddChunks(count int) error {
 	}
 
 	if ql.chunkCount.Add(int64(count)) > int64(ql.maxChunksPerQuery) {
+		if ql.logger != nil {
+			level.Warn(ql.logger).Log("source", "query_limiter.go", "func", "AddChunks", "msg", "Adding "+string(count)+" chunks to the limiter", "chunkCount", ql.chunkCount.Load(), "maxChunksPerQuery", ql.maxChunksPerQuery, "status", "FAILED")
+		}
 		return fmt.Errorf(MaxChunksPerQueryLimitMsgFormat, ql.maxChunksPerQuery)
+	}
+	if count != 0 && ql.logger != nil {
+		level.Warn(ql.logger).Log("source", "query_limiter.go", "func", "AddChunks", "msg", "Adding "+string(count)+" chunks to the limiter", "chunkCount", ql.chunkCount.Load(), "maxChunksPerQuery", ql.maxChunksPerQuery, "status", "OK")
 	}
 	return nil
 }

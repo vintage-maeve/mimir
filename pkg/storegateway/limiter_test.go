@@ -18,7 +18,7 @@ import (
 
 func TestLimiter(t *testing.T) {
 	c := promauto.With(nil).NewCounter(prometheus.CounterOpts{})
-	l := NewLimiter(10, c)
+	l := NewLimiter(10, c, nil)
 
 	assert.NoError(t, l.Reserve(5))
 	assert.Equal(t, float64(0), prom_testutil.ToFloat64(c))
@@ -46,13 +46,13 @@ func checkErrorStatusCode(t *testing.T, err error) {
 // newStaticChunksLimiterFactory makes a new ChunksLimiterFactory with a static limit.
 func newStaticChunksLimiterFactory(limit uint64) ChunksLimiterFactory {
 	return func(failedCounter prometheus.Counter) ChunksLimiter {
-		return NewLimiter(limit, failedCounter)
+		return NewLimiter(limit, failedCounter, nil)
 	}
 }
 
 // newStaticSeriesLimiterFactory makes a new ChunksLimiterFactory with a static limit.
 func newStaticSeriesLimiterFactory(limit uint64) SeriesLimiterFactory {
 	return func(failedCounter prometheus.Counter) SeriesLimiter {
-		return NewLimiter(limit, failedCounter)
+		return NewLimiter(limit, failedCounter, nil)
 	}
 }
