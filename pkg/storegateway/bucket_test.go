@@ -34,6 +34,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	promtest "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
@@ -848,7 +849,7 @@ func prepareTestBlockWithBinaryReader(tb test.TB, dataSetup ...func(tb testing.T
 	r, err := indexheader.NewBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, id, mimir_tsdb.DefaultPostingOffsetInMemorySampling, indexheader.Config{})
 	require.NoError(tb, err)
 
-	return newBucketBlockFactory(bkt, r, id, minT, maxT)
+	return newBucketBlockFactory(tb, bkt, r, id, minT, maxT)
 }
 
 func prepareTestBlockWithStreamReader(tb test.TB, dataSetup ...func(tb testing.TB, appender storage.Appender)) func() *bucketBlock {
@@ -858,19 +859,28 @@ func prepareTestBlockWithStreamReader(tb test.TB, dataSetup ...func(tb testing.T
 	r, err := indexheader.NewStreamBinaryReader(context.Background(), log.NewNopLogger(), bkt, tmpDir, id, mimir_tsdb.DefaultPostingOffsetInMemorySampling, metrics, indexheader.Config{})
 	require.NoError(tb, err)
 
-	return newBucketBlockFactory(bkt, r, id, minT, maxT)
+	return newBucketBlockFactory(tb, bkt, r, id, minT, maxT)
 }
 
-func newBucketBlockFactory(bkt objstore.BucketReader, r indexheader.Reader, id ulid.ULID, minT int64, maxT int64) func() *bucketBlock {
+func newBucketBlockFactory(tb test.TB, bkt objstore.BucketReader, r indexheader.Reader, id ulid.ULID, minT int64, maxT int64) func() *bucketBlock {
+	meta := metadata.Meta{BlockMeta: tsdb.BlockMeta{ULID: id, MinTime: minT, MaxTime: maxT}}
+
+	var chunkObjs []string
+	require.NoError(tb, bkt.Iter(context.Background(), path.Join(meta.ULID.String(), block.ChunksDirname), func(n string) error {
+		chunkObjs = append(chunkObjs, n)
+		return nil
+	}))
+
 	return func() *bucketBlock {
 		return &bucketBlock{
 			userID:            "tenant",
 			logger:            log.NewNopLogger(),
 			metrics:           NewBucketStoreMetrics(nil),
 			indexHeaderReader: r,
+			chunkObjs:         chunkObjs,
 			indexCache:        noopCache{},
 			bkt:               bkt,
-			meta:              &metadata.Meta{BlockMeta: tsdb.BlockMeta{ULID: id, MinTime: minT, MaxTime: maxT}},
+			meta:              &meta,
 			partitioners:      newGapBasedPartitioners(mimir_tsdb.DefaultPartitionerMaxGapSize, nil),
 		}
 	}
@@ -880,6 +890,7 @@ func uploadTestBlock(t testing.TB, tmpDir string, bkt objstore.Bucket, dataSetup
 	headOpts := tsdb.DefaultHeadOptions()
 	headOpts.ChunkDirRoot = tmpDir
 	headOpts.ChunkRange = 1000
+	headOpts.EnableNativeHistograms.Store(true)
 	h, err := tsdb.NewHead(nil, nil, nil, nil, headOpts, nil)
 	assert.NoError(t, err)
 	defer func() {
@@ -3021,4 +3032,157 @@ func BenchmarkFilterPostingsByCachedShardHash_NoPostingsShifted(b *testing.B) {
 		// modify it (cache is empty).
 		filterPostingsByCachedShardHash(ps, shard, cachedSeriesHasher{cache}, nil)
 	}
+}
+
+func TestScience(t *testing.T) {
+	// TODO: tsdb.headAppender (head_append.go in prometheus repo) goes through all samples, then all
+	// histograms, then all float histograms. This means that if you submit a histogram at time 0 and
+	// then a sample at time 10, the sample will get processed first and the histogram will register as OOO
+
+	lbls := labels.FromStrings("foo", "bar")
+
+	type testCase struct {
+		name               string
+		append             func(testing.TB, storage.Appender)
+		expectedLenResults int
+	}
+
+	testCases := []testCase{
+		{
+			name: "append order: histogram then float",
+			append: func(t testing.TB, app storage.Appender) {
+				var err error
+
+				_, err = app.AppendHistogram(0, lbls, 10, tsdb.GenerateTestHistogram(1), nil)
+				require.NoError(t, err)
+
+				_, err = app.Append(0, lbls, 20, 10)
+				require.NoError(t, err)
+
+				require.NoError(t, app.Commit())
+			},
+			expectedLenResults: 2,
+		},
+		{
+			name: "append order: float then histogram",
+			append: func(t testing.TB, app storage.Appender) {
+				var err error
+
+				_, err = app.Append(0, lbls, 10, 10)
+				require.NoError(t, err)
+
+				_, err = app.AppendHistogram(0, lbls, 20, tsdb.GenerateTestHistogram(1), nil)
+				require.NoError(t, err)
+
+				require.NoError(t, app.Commit())
+			},
+			expectedLenResults: 2,
+		},
+		{
+			name: "append order: histogram then float histogram",
+			append: func(t testing.TB, app storage.Appender) {
+				var err error
+
+				_, err = app.AppendHistogram(0, lbls, 10, tsdb.GenerateTestHistogram(1), nil)
+				require.NoError(t, err)
+
+				_, err = app.AppendHistogram(0, lbls, 20, nil, tsdb.GenerateTestFloatHistogram(1))
+				require.NoError(t, err)
+
+				require.NoError(t, app.Commit())
+			},
+			expectedLenResults: 2,
+		},
+		{
+			name: "append order: float histogram then histogram",
+			append: func(t testing.TB, app storage.Appender) {
+				var err error
+
+				_, err = app.AppendHistogram(0, lbls, 10, nil, tsdb.GenerateTestFloatHistogram(1))
+				require.NoError(t, err)
+
+				_, err = app.AppendHistogram(0, lbls, 20, tsdb.GenerateTestHistogram(1), nil)
+				require.NoError(t, err)
+
+				require.NoError(t, app.Commit())
+			},
+			expectedLenResults: 2,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			newTestBucketBlock := prepareTestBlockWithBinaryReader(test.NewTB(t), tc.append)
+
+			b := newTestBucketBlock()
+			b.indexCache = newInMemoryIndexCache(t)
+
+			cl := NewLimiter(math.MaxUint64, promauto.With(nil).NewCounter(prometheus.CounterOpts{Name: "test"}))
+			sl := NewLimiter(math.MaxUint64, promauto.With(nil).NewCounter(prometheus.CounterOpts{Name: "test"}))
+			shc := hashcache.NewSeriesHashCache(1 << 20).GetBlockCache(b.meta.ULID.String())
+
+			indexr := b.indexReader()
+
+			chunkr := b.chunkReader(context.Background())
+
+			chunksPool := pool.NewSafeSlabPool[byte](chunkBytesSlicePool, chunkBytesSlabSize)
+			defer chunksPool.Release()
+
+			matchers := []*labels.Matcher{
+				labels.MustNewMatcher(labels.MatchEqual, "foo", "bar"),
+			}
+
+			ss, _, err := blockSeries(context.Background(), indexr, chunkr, chunksPool, matchers, nil, cachedSeriesHasher{shc}, cl, sl, false, b.meta.MinTime, b.meta.MaxTime, log.NewNopLogger())
+			require.NoError(t, err)
+
+			results := make([]result, 0, 2)
+
+			for ss.Next() {
+				_, chks := ss.At()
+				for _, rChk := range chks {
+					var chkEnc chunkenc.Encoding
+
+					switch rChk.Raw.Type {
+					case storepb.Chunk_XOR:
+						chkEnc = chunkenc.EncXOR
+					case storepb.Chunk_Histogram:
+						chkEnc = chunkenc.EncHistogram
+					case storepb.Chunk_FloatHistogram:
+						chkEnc = chunkenc.EncFloatHistogram
+					default:
+						t.Fatalf("Unrecognized chunk type: %s", rChk.Raw.Type)
+					}
+
+					chk, err := chunkenc.FromData(chkEnc, rChk.Raw.Data)
+					require.NoError(t, err)
+
+					chkIter := chk.Iterator(nil)
+					for valType := chkIter.Next(); valType != chunkenc.ValNone; valType = chkIter.Next() {
+						switch valType {
+						case chunkenc.ValFloat:
+							ts, v := chkIter.At()
+							results = append(results, result{ts, v, nil, nil})
+						case chunkenc.ValHistogram:
+							ts, h := chkIter.AtHistogram()
+							results = append(results, result{ts, 0, h, nil})
+						case chunkenc.ValFloatHistogram:
+							ts, h := chkIter.AtFloatHistogram()
+							results = append(results, result{ts, 0, nil, h})
+						default:
+							t.Fatalf("Unrecognized val type: %s", valType)
+						}
+					}
+				}
+			}
+
+			require.Len(t, results, tc.expectedLenResults)
+		})
+	}
+}
+
+type result struct {
+	ts        int64
+	v         float64
+	hist      *histogram.Histogram
+	floatHist *histogram.FloatHistogram
 }
