@@ -7,6 +7,7 @@ package ingester
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -381,6 +382,11 @@ func (u *userTSDB) blocksToDelete(blocks []*tsdb.Block) map[ulid.ULID]struct{} {
 	}
 
 	deletable := tsdb.DefaultBlocksToDelete(u.db)(blocks)
+
+	fmt.Println(len(deletable), " blocks have been marked for deletion")
+	for k := range deletable {
+		fmt.Println("\t\t\t", k)
+	}
 	result := map[ulid.ULID]struct{}{}
 	deadline := time.Now().Add(-u.blockMinRetention)
 
@@ -390,18 +396,29 @@ func (u *userTSDB) blocksToDelete(blocks []*tsdb.Block) map[ulid.ULID]struct{} {
 
 		for blockID := range deletable {
 			shippedBlockTime, ok := shippedBlocks[blockID]
+			fmt.Println("shippedBlockTime", shippedBlockTime, "deadline", deadline)
 			if ok && shippedBlockTime.Before(deadline) {
 				result[blockID] = struct{}{}
 			}
+		}
+		fmt.Println(len(result), " blocks have been actually deleted")
+		for k := range result {
+			fmt.Println("\t\t\t", k)
 		}
 		return result
 	}
 
 	for blockID := range deletable {
 		blockCreationTime := time.UnixMilli(int64(blockID.Time()))
+		fmt.Println("blockCreationTime", blockCreationTime, "deadline", deadline)
 		if blockCreationTime.Before(deadline) {
 			result[blockID] = struct{}{}
 		}
+	}
+
+	fmt.Println(len(result), " blocks have been actually deleted")
+	for k := range result {
+		fmt.Println("\t\t\t", k)
 	}
 
 	return result

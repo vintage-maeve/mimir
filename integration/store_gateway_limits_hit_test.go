@@ -181,19 +181,19 @@ func TestNew(t *testing.T) {
 		expectedErrorKey            string
 	}{
 		"when store-gateway hits max_fetched_series_per_query, 'exceeded series limit' is returned": {
-			additionalStoreGatewayFlags: map[string]string{"-querier.max-fetched-series-per-query": "3"},
+			additionalStoreGatewayFlags: map[string]string{"-querier.max-fetched-series-per-query": "1"},
 			expectedErrorKey:            storegateway.ErrSeriesLimitMessage,
 		},
 		"when querier hits max_fetched_series_per_query, 'err-mimir-max-series-per-query' is returned": {
-			additionalQuerierFlags: map[string]string{"-querier.max-fetched-series-per-query": "3"},
+			additionalQuerierFlags: map[string]string{"-querier.max-fetched-series-per-query": "1"},
 			expectedErrorKey:       string(globalerror.MaxSeriesPerQuery),
 		},
 		"when store-gateway hits max_fetched_chunks_per_query, 'exceeded chunks limit' is returned": {
-			additionalStoreGatewayFlags: map[string]string{"-querier.max-fetched-chunks-per-query": "3"},
+			additionalStoreGatewayFlags: map[string]string{"-querier.max-fetched-chunks-per-query": "1"},
 			expectedErrorKey:            storegateway.ErrChunksLimitMessage,
 		},
 		"when querier hits max_fetched_chunks_per_query, 'err-mimir-max-chunks-per-query' is returned": {
-			additionalQuerierFlags: map[string]string{"-querier.max-fetched-chunks-per-query": "4"},
+			additionalQuerierFlags: map[string]string{"-querier.max-fetched-chunks-per-query": "1"},
 			expectedErrorKey:       string(globalerror.MaxChunksPerQuery),
 		},
 	}
@@ -209,20 +209,23 @@ func TestNew(t *testing.T) {
 			timeSeries2, _, _ := generateSeries("series_2", timeStamp2, prompb.Label{Name: "series_2", Value: "series_2"})
 
 			pushTimeSeries(t, client, timeSeries1)
-			pushTimeSeries(t, client, timeSeries2)
 
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(2), "cortex_ingester_shipper_uploads_total"))
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(0), "cortex_ingester_memory_series"))
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(2), "cortex_ingester_memory_series_created_total"))
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(2), "cortex_ingester_memory_series_removed_total"))
-			require.NoError(t, storeGateway.WaitSumMetrics(e2e.GreaterOrEqual(2), "cortex_bucket_store_blocks_loaded"))
+			//require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(2), "cortex_ingester_tsdb_time_retentions_total"))
+			require.NoError(t, storeGateway.WaitSumMetrics(e2e.Equals(2), "cortex_bucket_store_blocks_loaded"))
 
 			// ensures that data will be queried from store-gateway, and not from ingester: at this stage 1 block of data should be stored
 			//waitUntilShippedToStorage(t, ingester, storeGateway, 1)
 
-			count, err := ingester.SumMetrics([]string{"cortex_ingester_tsdb_head_chunks_removed_total"})
+			pushTimeSeries(t, client, timeSeries2)
+
+			count1, err := ingester.SumMetrics([]string{"cortex_ingester_tsdb_head_chunks_removed_total"})
+			count2, err := ingester.SumMetrics([]string{"cortex_ingester_tsdb_time_retentions_total"})
 			require.NoError(t, err)
-			fmt.Println(strings.Repeat("-", 30), "Pushed and consumed first 2 series with timestamps ", timeStamp1, timeStamp2, "count", count)
+			fmt.Println(strings.Repeat("-", 30), "Pushed and consumed first 2 series with timestamps ", timeStamp1, timeStamp2, "count", count1, count2)
 
 			// Verify we can successfully read the data we have just pushed
 			rangeResultResponse, _, err := client.QueryRangeRaw("{__name__=~\"series_.+\"}", timeStamp1, timeStamp2.Add(1*time.Hour), time.Second)
@@ -241,14 +244,16 @@ func TestNew(t *testing.T) {
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(0), "cortex_ingester_memory_series"))
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(4), "cortex_ingester_memory_series_created_total"))
 			require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(4), "cortex_ingester_memory_series_removed_total"))
+			//require.NoError(t, ingester.WaitSumMetrics(e2e.Equals(4), "cortex_ingester_tsdb_time_retentions_total"))
 			require.NoError(t, storeGateway.WaitSumMetrics(e2e.GreaterOrEqual(4), "cortex_bucket_store_blocks_loaded"))
 
 			// ensures that data will be queried from store-gateway, and not from ingester: at this stage 2 blocks of data should be stored
 			//waitUntilShippedToStorage(t, ingester, storeGateway, 2)
 
-			count, err = ingester.SumMetrics([]string{"cortex_ingester_tsdb_head_chunks_removed_total"})
+			count1, err = ingester.SumMetrics([]string{"cortex_ingester_tsdb_head_chunks_removed_total"})
+			count2, err = ingester.SumMetrics([]string{"cortex_ingester_tsdb_time_retentions_total"})
 			require.NoError(t, err)
-			fmt.Println(strings.Repeat("-", 30), "Pushed and consumed last 2 series with timestamps ", timeStamp3, timeStamp4, "count", count)
+			fmt.Println(strings.Repeat("-", 30), "Pushed and consumed last 2 series with timestamps ", timeStamp3, timeStamp4, "count", count1, count2)
 
 			// Verify we cannot read the data we just pushed because the limit is hit, and the status code 422 is returned
 			rangeResultResponse, rangeResultBody, err := client.QueryRangeRaw("{__name__=~\"series_.+\"}", timeStamp1, timeStamp4.Add(1*time.Hour), time.Second)
