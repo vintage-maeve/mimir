@@ -13,7 +13,9 @@ This topic provides tips and techniques for you to consider when setting up a pr
 
 ## Ingester
 
-### Ensure a high number of max open file descriptors
+### Ensure a high number of maximum number of open file descriptors
+
+File descriptors are used to manage the flow of data between the ingester and its data sources. Specifically, the ingester opens file descriptors to read data from input files or network sockets, and uses these file descriptors to pass the data to the processing pipeline. File descriptors are important because they allow the ingester to efficiently handle large volumes of data from multiple sources. By using file descriptors, the ingester can keep track of which data sources are active and prioritize the processing of incoming data.
 
 The ingester receives samples from distributor, and appends the received samples to the specific per-tenant TSDB that is stored on the ingester local disk.
 The per-tenant TSDB is composed of several files and the ingester keeps a file descriptor open for each TSDB file.
@@ -24,13 +26,13 @@ We recommend fine-tuning the following settings to avoid reaching the maximum nu
 1. Configure the system's `file-max` ulimit to at least `65536`. Increase the limit to `1048576` when running a Grafana Mimir cluster with more than a thousand tenants.
 1. Enable ingesters [shuffle sharding]({{< relref "../../../configure/configure-shuffle-sharding/index.md" >}}) to reduce the number of tenants per ingester.
 
-### Ingester disk space
+### Ingester disk space requirements
 
-The ingester writes received samples to a write-ahead log (WAL) and by default, compacts them into a new block every two hours.
-Both the WAL and blocks are temporarily stored on the local disk.
+The ingester writes received samples to a write-ahead log (WAL) and by default, compacts them into a new block every configured time interval.
+Both the WAL and blocks are temporarily stored on the local disk on the local disk.
 The required disk space depends on the number of time series stored in the ingester and the configured `-blocks-storage.tsdb.retention-period`.
 
-For more information about estimating the required ingester disk space, refer to [Planning capacity]({{< relref "../planning-capacity.md#ingester" >}}).
+For more information about estimating the required ingester disk space requirements, refer to [Planning capacity]({{< relref "../planning-capacity.md#ingester" >}}).
 
 ### Ingester disk IOPS
 
@@ -44,7 +46,7 @@ For these reasons, run the ingesters on disks such as SSDs that have fast disk s
 
 ### Ensure caching is enabled
 
-The querier supports caching to reduce the number API calls to the long-term storage.
+The Querier supports caching to reduce the number API requests to the long-term storage.
 
 We recommend enabling caching in the querier.
 For more information about configuring the cache, refer to [querier]({{< relref "../../architecture/components/querier.md" >}}).
@@ -53,14 +55,14 @@ For more information about configuring the cache, refer to [querier]({{< relref 
 
 When running Grafana Mimir at scale, querying non-compacted blocks might be inefficient for the following reasons:
 
-- Non compacted blocks contain duplicated samples, as a result of the ingesters replication.
+- Non-compacted blocks contain duplicated samples, as a result of the ingesters replication.
 - Querying many small TSDB indexes is slower than querying a few compacted TSDB indexes.
 
 The default values for `-querier.query-store-after`, `-querier.query-ingesters-within`, and `-blocks-storage.bucket-store.ignore-blocks-within` are set such that only compacted blocks are queried. In most cases, no additional configuration is required.
 
 Configure Grafana Mimir so large tenants are parallelized by the compactor:
 
-1. Configure compactor's `-compactor.split-and-merge-shards` and `-compactor.split-groups` for every tenant with more than 20 million active series. For more information about configuring the compactor's split and merge shards, refer to [compactor]({{< relref "../../architecture/components/compactor/index.md" >}}).
+1. Configure compactor's `-compactor.split-and-merge-shards` and `-compactor.split-groups` for every tenant with more than 20 million active time series. For more information about configuring the compactor's split and merge shards, refer to [compactor]({{< relref "../../architecture/components/compactor/index.md" >}}).
 
 #### How to estimate `-querier.query-store-after`
 
