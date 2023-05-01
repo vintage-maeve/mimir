@@ -15,8 +15,6 @@ This topic provides tips and techniques for you to consider when setting up a pr
 
 ### Ensure a high number of maximum number of open file descriptors
 
-File descriptors are used to manage the flow of data between the ingester and its data sources. Specifically, the ingester opens file descriptors to read data from input files or network sockets, and uses these file descriptors to pass the data to the processing pipeline. File descriptors are important because they allow the ingester to efficiently handle large volumes of data from multiple sources. By using file descriptors, the ingester can keep track of which data sources are active and prioritize the processing of incoming data.
-
 The ingester receives samples from distributor, and appends the received samples to the specific per-tenant TSDB that is stored on the ingester local disk.
 The per-tenant TSDB is composed of several files and the ingester keeps a file descriptor open for each TSDB file.
 The total number of file descriptors, used to load TSDB files, linearly increases with the number of tenants in the Grafana Mimir cluster and the configured `-blocks-storage.tsdb.retention-period`.
