@@ -26,7 +26,7 @@ We recommend fine-tuning the following settings to avoid reaching the maximum nu
 
 ### Ingester disk space requirements
 
-The ingester writes received samples to a write-ahead log (WAL) and by default, compacts them into a new block every configured time interval.
+The ingester writes received samples to a write-ahead log (WAL) and by default, compacts them into a new block every two hours.
 Both the WAL and blocks are temporarily stored on the local disk.
 The required disk space depends on the number of time series stored in the ingester and the configured `-blocks-storage.tsdb.retention-period`.
 
