@@ -66,10 +66,10 @@ receivers:
   - name: dummy`
 
 	simpleConfigTwo = `route:
-  receiver: dummy
+  receiver: dummy2
 
 receivers:
-  - name: dummy`
+  - name: dummy2`
 
 	simpleTemplateOne = `{{ define "some.template.one" }}{{ end }}`
 	simpleTemplateTwo = `{{ define "some.template.two" }}{{ end }}`
@@ -2276,8 +2276,7 @@ func Test_configChanged(t *testing.T) {
 			},
 			exp: true,
 		},
-		// TODO: this does not work correctly because the configs used for tests do not actually differ.
-		/*{
+		{
 			name: "config changed",
 			left: alertspb.AlertConfigDesc{
 				User:      "user1",
@@ -2300,7 +2299,7 @@ func Test_configChanged(t *testing.T) {
 				},
 			},
 			exp: true,
-		},*/
+		},
 		{
 			name: "template body changed",
 			left: alertspb.AlertConfigDesc{
