@@ -264,7 +264,7 @@
       - "--enable-feature=native-histograms"
     "extra_hosts":
       - "host.docker.internal:host-gateway"
-    "image": "prom/prometheus:v2.40.6"
+    "image": "prom/prometheus-linux-amd64:bubblebobble"
     "ports":
       - "9090:9090"
     "volumes":
