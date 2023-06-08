@@ -13,7 +13,7 @@ This topic provides tips and techniques for you to consider when setting up a pr
 
 ## Ingester
 
-### Ensure a high number of maximum number of open file descriptors
+### Ensure a high maximum number of open file descriptors
 
 The ingester receives samples from distributor, and appends the received samples to the specific per-tenant TSDB that is stored on the ingester local disk.
 The per-tenant TSDB is composed of several files and the ingester keeps a file descriptor open for each TSDB file.
@@ -30,7 +30,7 @@ The ingester writes received samples to a write-ahead log (WAL) and by default, 
 Both the WAL and blocks are temporarily stored on the local disk.
 The required disk space depends on the number of time series stored in the ingester and the configured `-blocks-storage.tsdb.retention-period`.
 
-For more information about estimating the required ingester disk space requirements, refer to [Planning capacity]({{< relref "../planning-capacity.md#ingester" >}}).
+For more information about estimating ingester disk space requirements, refer to [Planning capacity]({{< relref "../planning-capacity.md#ingester" >}}).
 
 ### Ingester disk IOPS
 
@@ -44,7 +44,7 @@ For these reasons, run the ingesters on disks such as SSDs that have fast disk s
 
 ### Ensure caching is enabled
 
-The Querier supports caching to reduce the number API requests to the long-term storage.
+The querier supports caching to reduce the number API requests to the long-term storage.
 
 We recommend enabling caching in the querier.
 For more information about configuring the cache, refer to [querier]({{< relref "../../architecture/components/querier.md" >}}).
